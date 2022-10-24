@@ -1,0 +1,136 @@
+name: publish-cyprus-data-models
+
+on:
+  pull_request:
+    branches:
+      - main
+
+env:
+  PYTHON_VERSION: '3.10'
+  POETRY_VERSION: '1.2.1'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          ref: main
+
+      - name: Tag
+        id: tag
+        run: |
+          VERSION=$(sed -n 's/^version\s*=\s*\"\(\S*\)\"/\1/p' pyproject.toml)
+          echo "::set-output name=version::${VERSION}"
+
+  create-pr:
+    runs-on: ubuntu-latest
+    needs:
+      - publish
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          repository: source-ag/greenhouse-data-pipelines
+          ref: main
+
+      - uses: actions/setup-python@v2
+        id: setup-python
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Load cached Poetry installation
+        uses: actions/cache@v3
+        with:
+          path: /home/runner/.local/
+          key: poetry-install-${{ steps.setup-python.outputs.python-version }}-${{ env.POETRY_VERSION }}
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: ${{ env.POETRY_VERSION }}
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          installer-parallel: true
+
+      - name: Authenticate to CodeArtifact
+        id: authenticate-codeartifact
+        uses: source-ag/codeartifact-login-action@main
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: eu-central-1
+          role-to-assume: ${{ secrets.PACKAGE_REPOSITORY_ROLE }}
+          codeartifact-domain: ${{ secrets.PACKAGE_REPOSITORY_DOMAIN }}
+          codeartifact-domain-owner: ${{ secrets.PACKAGE_REPOSITORY_ACCOUNT }}
+          codeartifact-repository: ${{ secrets.PACKAGE_REPOSITORY }}
+          configure-poetry: true
+
+      - name: Load cached venv
+        id: cached-poetry-dependencies
+        uses: actions/cache@v3
+        with:
+          path: .venv
+          key: venv-greenhouse-data-pipelines-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('poetry.lock') }}
+          restore-keys: |
+            venv-greenhouse-data-pipelines-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-ansi --no-root --sync
+
+      - name: Check for update
+        id: check-for-changes
+        run: |
+          git checkout -b chore/update-cyprus-data-models
+          git config --global user.email "github-bot@source.ag"
+          git config --global user.name "Github Bot"
+          echo holo >> README.md
+          git add pyproject.toml poetry.lock README.md
+          git commit -m"chore: update cyprus-data-models to version ${{ needs.publish.outputs.version }}"
+          git push origin chore/update-cyprus-data-models
+
+#          poetry add cyprus-data-models@${{ needs.publish.outputs.version }}
+#          EXIT_CODE=0
+#          git diff --quiet --exit-code poetry.lock || EXIT_CODE=$?
+#
+#          if [ "$EXIT_CODE" == 1 ]; then
+#            echo "Preparing commit"
+#            git config --global user.email "github-bot@source.ag"
+#            git config --global user.name "Github Bot"
+#            git add pyproject.toml poetry.lock
+#            git commit -m"chore: update cyprus-data-models to version ${{ needs.publish.outputs.version }}"
+#          else
+#            echo "Nothing to do"
+#          fi
+#          echo "::set-output name=dirty::${EXIT_CODE}"
+
+
+      - name: Create Pull Request
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GREENHOUSE_DATA_PIPELINES_DEPLOY_KEY }}
+          script: |
+            github.rest.pulls.create({
+              title: "Update version of cyprus-data-models to ${{ needs.publish.outputs.version }}",
+              owner: "source-ag",
+              repo: "greenhouse-data-pipelines",
+              head: "chore/update-cyprus-data-models",
+              base: "main",
+              body: "body g"
+            });
+
+
+#      - name: Create Pull Request
+#        uses: actions/github-script@v6
+#        if: steps.check-for-changes.outputs.dirty == 1
+#        with:
+#          script: |
+#            github.rest.pulls.create({
+#              title: '[Example] Simple demo',
+#              "source-ag",
+#              "greenhouse-data-pipelines",
+#              head: "${{ github.ref_name }}",
+#              base: 'main',
+#              body: "yolo"
+#            });
